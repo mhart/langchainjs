@@ -1,10 +1,6 @@
-import * as fsDefault from "node:fs";
-import * as path from "node:path";
-import * as os from "node:os";
-import { Readable } from "node:stream";
 import { S3Client, GetObjectCommand, S3ClientConfig } from "@aws-sdk/client-s3";
 import { BaseDocumentLoader } from "../base.js";
-import { UnstructuredLoader as UnstructuredLoaderDefault } from "../fs/unstructured.js";
+import { UnstructuredWebLoader as UnstructuredLoaderDefault } from "./unstructured.js";
 
 /**
  * Represents the configuration options for the S3 client. It extends the
@@ -36,7 +32,6 @@ export interface S3LoaderParams {
     /** @deprecated Use the credentials object instead */
     secretAccessKey?: string;
   };
-  fs?: typeof fsDefault;
   UnstructuredLoader?: typeof UnstructuredLoaderDefault;
 }
 
@@ -60,8 +55,6 @@ export class S3Loader extends BaseDocumentLoader {
     secretAccessKey?: string;
   };
 
-  private _fs: typeof fsDefault;
-
   private _UnstructuredLoader: typeof UnstructuredLoaderDefault;
 
   constructor({
@@ -70,7 +63,6 @@ export class S3Loader extends BaseDocumentLoader {
     unstructuredAPIURL,
     unstructuredAPIKey,
     s3Config = {},
-    fs = fsDefault,
     UnstructuredLoader = UnstructuredLoaderDefault,
   }: S3LoaderParams) {
     super();
@@ -79,21 +71,17 @@ export class S3Loader extends BaseDocumentLoader {
     this.unstructuredAPIURL = unstructuredAPIURL;
     this.unstructuredAPIKey = unstructuredAPIKey;
     this.s3Config = s3Config;
-    this._fs = fs;
     this._UnstructuredLoader = UnstructuredLoader;
   }
 
   /**
-   * Loads the file from the S3 bucket, saves it to a temporary directory,
+   * Loads the file from the S3 bucket into memory,
    * and then uses the UnstructuredLoader to load the file as a document.
    * @returns An array of Document objects representing the loaded documents.
    */
   public async load() {
-    const tempDir = this._fs.mkdtempSync(
-      path.join(os.tmpdir(), "s3fileloader-")
-    );
-
-    const filePath = path.join(tempDir, this.key);
+    const filePath = this.key;
+    let objectData: Uint8Array;
 
     try {
       const s3Client = new S3Client(this.s3Config);
@@ -105,22 +93,8 @@ export class S3Loader extends BaseDocumentLoader {
 
       const response = await s3Client.send(getObjectCommand);
 
-      const objectData = await new Promise<Buffer>((resolve, reject) => {
-        const chunks: Buffer[] = [];
+      objectData = await response.Body.transformToByteArray();
 
-        // eslint-disable-next-line no-instanceof/no-instanceof
-        if (response.Body instanceof Readable) {
-          response.Body.on("data", (chunk: Buffer) => chunks.push(chunk));
-          response.Body.on("end", () => resolve(Buffer.concat(chunks)));
-          response.Body.on("error", reject);
-        } else {
-          reject(new Error("Response body is not a readable stream."));
-        }
-      });
-
-      this._fs.mkdirSync(path.dirname(filePath), { recursive: true });
-
-      this._fs.writeFileSync(filePath, objectData);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       throw new Error(
@@ -136,6 +110,7 @@ export class S3Loader extends BaseDocumentLoader {
 
       const unstructuredLoader = new this._UnstructuredLoader(
         filePath,
+        objectData,
         options
       );
 
